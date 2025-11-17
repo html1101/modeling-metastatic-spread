@@ -1,5 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
+import random
+
+from sympy.polys.numberfields.subfield import field_isomorphism_factor
 
 dt = 1 * (10 ** -3)
 dx = 5 * (10 ** -3)
@@ -40,6 +43,10 @@ E_2 = 0.2553
 E_3 = 0.1986
 # Number of iterations to run
 ITERATIONS = 10
+# Max steps in vasaclature
+vasc_time = 6
+# Probability cluster disaggregates
+P_d = .3 # idk tbh the paper doesn't say...
 
 @dataclass
 class PrimaryGrid: 
@@ -50,15 +57,15 @@ class PrimaryGrid:
     -value = concentration (int, how many of them there are) 
     -Specifc PDES (methods)
     """
-    mes: dict = dict() #mesenchymal
-    epi: dict = dict() #epithelial
-    MMP2: dict = dict() # matrix metalloproteinase-2
-    ECM: dict = dict() # extracellular matrix
-    bv: dict = dict() #blood vessels 
-    clusters : List[tuple] = [] #clusters leaving 
+    mes: dict = field(default_factory = dict) #mesenchymal
+    epi: dict = field(default_factory = dict) #epithelial
+    MMP2: dict = field(default_factory = dict) # matrix metalloproteinase-2
+    ECM: dict = field(default_factory = dict) # extracellular matrix
+    bv: dict = field(default_factory = dict) #blood vessels
+    clusters : List[tuple] = field(default_factory = list) #clusters leaving
 
     #Rishika
-    def initalize_primary(): 
+    def initalize_primary(self):
         """
         adds mesechmmal cancer cells cluster in middle
         add epi
@@ -147,7 +154,7 @@ class SecondaryGrid:
         pass
         
     #Sarah    
-    def update_all(self) -> None: # list of cells that move into vasculature
+    def update_all(self, clusters: List[tuple[int, int]]) -> None: # list of cells that move into vasculature
         """
         update MMP2 then ECM then mesechymal then epithelial
         figures out what cells are coming in through the blood vessels and add them to the dicts
@@ -162,34 +169,94 @@ class SecondaryGrid:
 Set up vascular class 
 - List of cell clusters in vascular (#mesenchyml, #epithelia, time)
 """
-#Snickering JOJO
+#Funny Joelle 😂😂😂
 @dataclass
 class Vascular:
-    clusters: List[tuple] = [] # (# mes, # epi, time)
-    
-    def update_all(self, newClusters) -> None:
+    clusters: List[tuple[int, int, int]] = field(default_factory=list) # (# mes, # epi, time)
+    bones: List[tuple[int, int]] = field(default_factory=list)
+    lungs: List[tuple[int, int]] = field(default_factory=list)
+    liver: List[tuple[int, int]] = field(default_factory=list)
+
+    def update_all(self, primary) -> None:
         """
         add the new cells to the current clusters
         iterate through the clusters
-        increment time 
+        increment time
+        assign leaving clusters to new locations, and store in class attribute
         """
-        
+        newClusters = primary.clusters
+        self.clusters.append(newClusters)
+        updatedClusters = []
+        leavingVascular = []
+        for cluster in self.clusters:
+            mes = cluster[0]
+            epi = cluster[1]
+            time = cluster[2]
+            if time == vasc_time:
+                leavingVascular.append(cluster)
+                continue
+            time +=1
+            # checking to see if they disaggregate
+            if time >= vasc_time/2 and mes+epi >1:
+                disaggregate_mes = 0
+                for _ in range(mes):
+                    r = random.random()
+                    if r < P_d:
+                        disaggregate_mes += 1
+                disaggregate_epi = 0
+                for _ in range(epi):
+                    r = random.random()
+                    if r < P_d:
+                        disaggregate_epi += 1
+                remaining_mes = mes - disaggregate_mes
+                remaining_epi = epi - disaggregate_epi
+                if remaining_mes + remaining_epi >=2:
+                    updatedClusters.append((remaining_mes, remaining_epi, time))
+                for i in range(disaggregate_mes):
+                    updatedClusters.append((1, 0, time))
+                for i in range(disaggregate_epi):
+                    updatedClusters.append((0, 1, time))
+            else:
+                updatedClusters.append((mes, epi, time))
+        bones = []
+        lungs = []
+        liver = []
+        for cluster in leavingVascular:
+            if cluster[0] == 0 or cluster[1] == 0:
+                prob = P_s # it's a single
+            else:
+                prob = P_C # it's a cluster
+            r = random.random()
+            if r < prob:
+                continue
+            else:
+                newLoc = random.randrange(1, 4)
+                if newLoc == 1:
+                    bones.append((cluster[0], cluster[1]))
+                elif newLoc == 2:
+                    lungs.append((cluster[0], cluster[1]))
+                elif newLoc == 3:
+                    liver.append((cluster[0], cluster[1]))
+
+        self.bones = bones
+        self.lungs = lungs
+        self.liver = liver
 
 @dataclass
 class Model: 
     """
-    One primary breast grid object : (grid class)
+    One primary breast grid object : (primary grid class)
     One vascular object : (vascular class)
-    One secondy bones grid object : (grid class)
-    One secondary lungs grid object : (grid class)
-    One secondary liver grid object : (grid class)
+    One secondy bones grid object : (secondary grid class)
+    One secondary lungs grid object : (secondary grid class)
+    One secondary liver grid object : (secondary grid class)
     move time step method?
     """
-    breast: Grid = Grid()
+    breast: PrimaryGrid = PrimaryGrid()
     vascular: Vascular = Vascular() 
-    bones : Grid = Grid()
-    lungs : Grid = Grid() 
-    liver : Grid = Grid()
+    bones : SecondaryGrid = SecondaryGrid()
+    lungs : SecondaryGrid = SecondaryGrid()
+    liver : SecondaryGrid = SecondaryGrid()
     
     #Sarah
     def initialize(self) -> None: 
@@ -203,12 +270,14 @@ class Model:
         """
         updates breast, vascular, bones, lungs, liver 
         """
-        prev = self.breast()
-        self.breast.update_all(prev)
-        prev_vasc = self.vascular.update_all(prev)
-        self.bones.update_all(prev_vasc)
-        self.lungs.update_all(prev_vasc)
-        self.liver.update_all(prev_vasc)
+        prev_primary_grid = self.breast
+        self.breast.update_all()
+        prev_vasc = self.vascular
+        self.vascular.update_all(prev_primary_grid)
+        # passing in the previous cells that will migrate to bones, lungs, liver
+        self.bones.update_all(prev_vasc.bones)
+        self.lungs.update_all(prev_vasc.lungs)
+        self.liver.update_all(prev_vasc.liver)
 
 
     
