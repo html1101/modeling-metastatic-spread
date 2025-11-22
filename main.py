@@ -3,6 +3,8 @@ from typing import List
 import random
 
 from sympy.polys.numberfields.subfield import field_isomorphism_factor
+length = 201 #board length
+width = 201 #board width
 
 dt = 1 * (10 ** -3)
 dx = 5 * (10 ** -3)
@@ -70,6 +72,7 @@ class PrimaryGrid:
         adds mesechmmal cancer cells cluster in middle
         add epi
         """
+        #I made my boundry flux thing assuming zero based indicies - Mia 
 
     #Carmen
     def update_MMP2(self) -> None:
@@ -85,7 +88,43 @@ class PrimaryGrid:
         simulate movement 
         simulate mitosis 
         """
-        pass 
+        new_mes = (self.mes).copy()
+        for (i,j), concentration in self.mes.values(): 
+            for _ in range(0,concentration):
+                ECM_conc_left = self.MM2[(i-1,j)] if i > 0 else 0
+                ECM_conc_right = self.MM2[(i+1,j)] if i < 200 else 0
+                ECM_conc_down = self.MM2[(i,j-1)] if j > 0 else 0
+                ECM_conc_up = self.MM2[(i,j+1)]  if j < 200 else 0
+                z = random.randint() 
+                prob_move_left = (dt / (dx)^2) * (D_M - (phi_M/4) *  (ECM_conc_right - ECM_conc_left))
+                prob_move_right = (dt / (dx)^2) * (D_M + (phi_M/4) *  (ECM_conc_right - ECM_conc_left))
+                prob_move_down = (dt / (dx)^2) * (D_M + (phi_M/4) *  (ECM_conc_up- ECM_conc_down))
+                prob_move_up  = (dt / (dx)^2) * (D_M - (phi_M/4) *  (ECM_conc_up- ECM_conc_down))
+                if z < prob_move_left: #cell moves left
+                    if i > 0:
+                        new_mes[(i,j)] = new_mes[(i,j)] -1
+                        new_mes[(i-1,j)] = new_mes[(i-1,j)] + 1
+                    else: 
+                        continue #no change if on left boundry 
+                elif z < prob_move_right + prob_move_right:  #cell moves right
+                    if i < 200: 
+                        new_mes[(i,j)] = new_mes[(i,j)] -1
+                        new_mes[(i+1,j)] = new_mes[(i-1,j)] + 1
+                    else: 
+                        continue #no change if on right boundry 
+                elif z < prob_move_down + prob_move_right + prob_move_left: #cell moves down
+                    if j > 0: 
+                        new_mes[(i,j)] = new_mes[(i,j)] -1
+                        new_mes[(i,j-1)] = new_mes[(i,j-1)] + 1
+                    else: 
+                        continue #no change if on lower boundry 
+                elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
+                    if j < 200: 
+                        new_mes[(i,j)] = new_mes[(i,j)] -1
+                        new_mes[(i,j+1)] = new_mes[(i,j+1)] + 1   
+                    else: 
+                        continue #no change if on upper boundry 
+        self.mes = new_mes           
 
     #Mia
     def update_epithelial(self) -> None:
@@ -93,7 +132,43 @@ class PrimaryGrid:
         simulate movement 
         simulate mitosis 
         """
-        pass
+        new_epi = (self.epi).copy()
+        for (i,j), concentration in self.epi.values(): 
+            for _ in range(0,concentration): 
+                ECM_conc_left = self.MM2[(i-1,j)] if i > 0 else 0
+                ECM_conc_right = self.MM2[(i+1,j)] if i < 200 else 0
+                ECM_conc_down = self.MM2[(i,j-1)] if j > 0 else 0
+                ECM_conc_up = self.MM2[(i,j+1)]  if j < 200 else 0
+                z = random.randint() 
+                prob_move_left = (dt / (dx)^2) * (D_E - (phi_E/4) *  (ECM_conc_right - ECM_conc_left))
+                prob_move_right = (dt / (dx)^2) * (D_E + (phi_E/4) *  (ECM_conc_right - ECM_conc_left))
+                prob_move_down = (dt / (dx)^2) * (D_E + (phi_E/4) *  (ECM_conc_up- ECM_conc_down))
+                prob_move_up  = (dt / (dx)^2) * (D_E - (phi_E/4) *  (ECM_conc_up- ECM_conc_down))
+                if z < prob_move_left: 
+                    if i > 0: 
+                        new_epi[(i,j)] = new_epi[(i,j)] -1
+                        new_epi[(i-1,j)] = new_epi[(i-1,j)] + 1
+                    else: 
+                        continue
+                elif z < prob_move_right + prob_move_left: 
+                    if i < 200:
+                        new_epi[(i,j)] = new_epi[(i,j)] -1
+                        new_epi[(i+1,j)] = new_epi[(i-1,j)] + 1
+                    else: 
+                        continue
+                elif z < prob_move_down + prob_move_right + prob_move_left: 
+                    if j > 0:
+                        new_epi[(i,j)] = new_epi[(i,j)] -1
+                        new_epi[(i,j-1)] = new_epi[(i,j-1)] + 1
+                    else: 
+                        continue
+                elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
+                    if j < 200:
+                        new_epi[(i,j)] = new_epi[(i,j)] -1
+                        new_epi[(i,j+1)] = new_epi[(i,j+1)] + 1    
+                    else: 
+                        continue
+        self.epi = new_epi  
         
     #Sarah  
     def update_all(self) -> None: # list of cells that move into vasculature
@@ -106,6 +181,7 @@ class PrimaryGrid:
         self.update_ECM()
         self.update_mesechymal()
         self.update_epithelial()
+        #need to do: figures out what cells are on blood vessels and removes them from dicts adds clusters leaving to self.cluster 
 
 class SecondaryGrid: 
     """
@@ -143,7 +219,43 @@ class SecondaryGrid:
         simulate movement 
         simulate mitosis 
         """
-        pass 
+        new_mes = (self.mes).copy()
+        for (i,j), concentration in self.mes.values(): 
+            for _ in range(0,concentration):
+                ECM_conc_left = self.MM2[(i-1,j)] if i > 0 else 0
+                ECM_conc_right = self.MM2[(i+1,j)] if i < 200 else 0
+                ECM_conc_down = self.MM2[(i,j-1)] if j > 0 else 0
+                ECM_conc_up = self.MM2[(i,j+1)]  if j < 200 else 0
+                z = random.randint() 
+                prob_move_left = (dt / (dx)^2) * (D_M - (phi_M/4) *  (ECM_conc_right - ECM_conc_left))
+                prob_move_right = (dt / (dx)^2) * (D_M + (phi_M/4) *  (ECM_conc_right - ECM_conc_left))
+                prob_move_down = (dt / (dx)^2) * (D_M + (phi_M/4) *  (ECM_conc_up- ECM_conc_down))
+                prob_move_up  = (dt / (dx)^2) * (D_M - (phi_M/4) *  (ECM_conc_up- ECM_conc_down))
+                if z < prob_move_left: #cell moves left
+                    if i > 0:
+                        new_mes[(i,j)] = new_mes[(i,j)] -1
+                        new_mes[(i-1,j)] = new_mes[(i-1,j)] + 1
+                    else: 
+                        continue #no change if on left boundry 
+                elif z < prob_move_right + prob_move_right:  #cell moves right
+                    if i < 200: 
+                        new_mes[(i,j)] = new_mes[(i,j)] -1
+                        new_mes[(i+1,j)] = new_mes[(i-1,j)] + 1
+                    else: 
+                        continue #no change if on right boundry 
+                elif z < prob_move_down + prob_move_right + prob_move_left: #cell moves down
+                    if j > 0: 
+                        new_mes[(i,j)] = new_mes[(i,j)] -1
+                        new_mes[(i,j-1)] = new_mes[(i,j-1)] + 1
+                    else: 
+                        continue #no change if on lower boundry 
+                elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
+                    if j < 200: 
+                        new_mes[(i,j)] = new_mes[(i,j)] -1
+                        new_mes[(i,j+1)] = new_mes[(i,j+1)] + 1   
+                    else: 
+                        continue #no change if on upper boundry 
+        self.mes = new_mes           
 
     #Mia
     def update_epithelial(self) -> None:
@@ -151,7 +263,43 @@ class SecondaryGrid:
         simulate movement 
         simulate mitosis 
         """
-        pass
+        new_epi = (self.epi).copy()
+        for (i,j), concentration in self.epi.values(): 
+            for _ in range(0,concentration): 
+                ECM_conc_left = self.MM2[(i-1,j)] if i > 0 else 0
+                ECM_conc_right = self.MM2[(i+1,j)] if i < 200 else 0
+                ECM_conc_down = self.MM2[(i,j-1)] if j > 0 else 0
+                ECM_conc_up = self.MM2[(i,j+1)]  if j < 200 else 0
+                z = random.randint() 
+                prob_move_left = (dt / (dx)^2) * (D_E - (phi_E/4) *  (ECM_conc_right - ECM_conc_left))
+                prob_move_right = (dt / (dx)^2) * (D_E + (phi_E/4) *  (ECM_conc_right - ECM_conc_left))
+                prob_move_down = (dt / (dx)^2) * (D_E + (phi_E/4) *  (ECM_conc_up- ECM_conc_down))
+                prob_move_up  = (dt / (dx)^2) * (D_E - (phi_E/4) *  (ECM_conc_up- ECM_conc_down))
+                if z < prob_move_left: 
+                    if i > 0: 
+                        new_epi[(i,j)] = new_epi[(i,j)] -1
+                        new_epi[(i-1,j)] = new_epi[(i-1,j)] + 1
+                    else: 
+                        continue
+                elif z < prob_move_right + prob_move_left: 
+                    if i < 200:
+                        new_epi[(i,j)] = new_epi[(i,j)] -1
+                        new_epi[(i+1,j)] = new_epi[(i-1,j)] + 1
+                    else: 
+                        continue
+                elif z < prob_move_down + prob_move_right + prob_move_left: 
+                    if j > 0:
+                        new_epi[(i,j)] = new_epi[(i,j)] -1
+                        new_epi[(i,j-1)] = new_epi[(i,j-1)] + 1
+                    else: 
+                        continue
+                elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
+                    if j < 200:
+                        new_epi[(i,j)] = new_epi[(i,j)] -1
+                        new_epi[(i,j+1)] = new_epi[(i,j+1)] + 1    
+                    else: 
+                        continue
+        self.epi = new_epi  
         
     #Sarah    
     def update_all(self, clusters: List[tuple[int, int]]) -> None: # list of cells that move into vasculature
@@ -163,6 +311,7 @@ class SecondaryGrid:
         self.update_ECM()
         self.update_mesechymal()
         self.update_epithelial()
+        #need to do: figures out what cells are coming in through the blood vessels and add them to the dicts
 
 
 """
@@ -195,7 +344,7 @@ class Vascular:
             if time == vasc_time:
                 leavingVascular.append(cluster)
                 continue
-            time +=1
+            time +=1 #maybe this should be dt? -mia 
             # checking to see if they disaggregate
             if time >= vasc_time/2 and mes+epi >1:
                 disaggregate_mes = 0
@@ -287,11 +436,10 @@ def main():
     # initialize model (populating with blood vessels and cells)
     model.initialize()
     # start with primary grid
-    for t in range(ITERATIONS): # change time later!!! # iterations
+    for t in range(ITERATIONS): # change time later!!! # I think this shoudl be iterations / dt? # iterations
         #update the model 
         model.update()
         #we are done!!!
 
 if __name__ == "__main__":
     main()
-    
