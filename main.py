@@ -3,6 +3,7 @@ from typing import List
 import random
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import math
 
 from sympy.polys.numberfields.subfield import field_isomorphism_factor
 length = 201  # board length
@@ -592,6 +593,15 @@ class Vascular:
     lungs: List[tuple[int, int]] = field(default_factory=list)
     liver: List[tuple[int, int]] = field(default_factory=list)
 
+    def probExit(self, time, k, midpoint):
+        """
+        returns a probability of a cell leaving the vasculature
+        probability increases as time increases
+        time = how long cell has been in vasculature
+        k = curve smoothness; default = .5
+        midpoint = 1/2 vasc_time. So when time == midpint, probability of exiting = .5
+        """
+        return 1 / (1 + math.exp(-k * (time - midpoint)))
     def update_all(self, primary) -> None:
         """
         add the new cells to the current clusters
@@ -607,10 +617,11 @@ class Vascular:
             mes = cluster[0]
             epi = cluster[1]
             time = cluster[2]
-            if time == vasc_time:
+            leaveProb = self.probExit(time, .5, vasc_time/2) # added random time of leaving instead of fixed time
+            if random.random() < leaveProb:
                 leavingVascular.append(cluster)
                 continue
-            time +=1 #maybe this should be dt? -mia 
+            time +=1 #maybe this should be dt? -mia
             # checking to see if they disaggregate
             if time >= vasc_time/2 and mes+epi >1:
                 disaggregate_mes = 0
