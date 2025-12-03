@@ -1,13 +1,22 @@
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import List
 import random
+import matplotlib
+matplotlib.use("Agg")  # Use a non-interactive backend
+
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-import math
 
-from sympy.polys.numberfields.subfield import field_isomorphism_factor
-length = 201  # board length
-width = 201  # board width
+import numpy as np
+from matplotlib import colors
+from scipy.ndimage import convolve
+import time
+
+
+
+HEIGHT = 201  # board length
+WIDTH = 201  # board width
 
 dt = 1 * (10 ** -3)
 dx = 5 * (10 ** -3)
@@ -54,9 +63,107 @@ vasc_time = 6
 P_d = .3  # idk tbh the paper doesn't say...
 
 
+# Global timing dictionary
+timing_stats = defaultdict(list)
+
+def time_function(func_name):
+    """Decorator to time function execution"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            result = func(*args, **kwargs)
+            elapsed = time.perf_counter() - start
+            timing_stats[func_name].append(elapsed)
+            return result
+        return wrapper
+    return decorator
+
+def print_timing_report():
+    """Print a comprehensive timing report"""
+    print("\n" + "=" * 80)
+    print("PERFORMANCE PROFILING REPORT")
+    print("=" * 80)
+    
+    # Calculate statistics for each function
+    stats = []
+    total_time = 0
+    
+    for func_name, times in timing_stats.items():
+        if len(times) > 0:
+            total = sum(times)
+            avg = total / len(times)
+            min_time = min(times)
+            max_time = max(times)
+            count = len(times)
+            
+            stats.append({
+                'name': func_name,
+                'total': total,
+                'avg': avg,
+                'min': min_time,
+                'max': max_time,
+                'count': count
+            })
+            total_time += total
+    
+    # Sort by total time (descending)
+    stats.sort(key=lambda x: x['total'], reverse=True)
+    
+    # Print header
+    print(f"\n{'Function':<35} {'Total (s)':<12} {'Avg (ms)':<12} {'Min (ms)':<12} {'Max (ms)':<12} {'Calls':<10} {'% Time':<10}")
+    print("-" * 110)
+    
+    # Print each function's stats
+    for stat in stats:
+        pct = (stat['total'] / total_time * 100) if total_time > 0 else 0
+        print(f"{stat['name']:<35} {stat['total']:>11.4f} {stat['avg']*1000:>11.4f} "
+              f"{stat['min']*1000:>11.4f} {stat['max']*1000:>11.4f} {stat['count']:>9} {pct:>9.1f}%")
+    
+    print("-" * 110)
+    print(f"{'TOTAL':<35} {total_time:>11.4f} {'':>11} {'':>11} {'':>11} {'':>9} {100:>9.1f}%")
+    print("\n" + "=" * 80)
+    
+    # Identify bottlenecks
+    print("\nBOTTLENECK ANALYSIS:")
+    print("-" * 80)
+    if len(stats) > 0:
+        print(f"\nTop 3 slowest operations:")
+        for i, stat in enumerate(stats[:3], 1):
+            pct = (stat['total'] / total_time * 100) if total_time > 0 else 0
+            print(f"  {i}. {stat['name']}: {stat['total']:.4f}s ({pct:.1f}% of total time)")
+    
+    print("\n" + "=" * 80)
+
+def in_range(data, pt):
+    if len(pt) != data.ndim:
+        return False
+
+    return all(0 <= pt[i] < data.shape[i] for i in range(len(pt)))
+
+LAPLACIAN_KERNEL = np.array([[0, 1, 0],
+                              [1, -4, 1],
+                              [0, 1, 0]], dtype=np.float64)
+
+cmap_epi = colors.LinearSegmentedColormap.from_list('epi',['black','blue'],256)
+cmap_mes = colors.LinearSegmentedColormap.from_list('mes',["black", "green"],256)
+cmap_bv = colors.LinearSegmentedColormap.from_list('bv',["black", "red"],256)
+cmap_mmp2 = colors.LinearSegmentedColormap.from_list('mmp2',["black", "purple"],256)
+
+cmap_mes._init()
+cmap_epi._init()
+cmap_bv._init()
+cmap_mmp2._init()
+
+alphas = np.linspace(0.0, 1.0, cmap_mes.N+3)
+# cmap_mes._lut[:,-1] = alphas
+# cmap_epi._lut[:,-1] = alphas
+cmap_bv._lut[:,-1] = alphas
+
+# alpha_mmp2 = np.linspace(0, 0.6, cmap_mes.N+3)
+# cmap_mmp2._lut[:,-1] = alpha_mmp2
 
 @dataclass
-class PrimaryGrid:
+class Grid:
     """
     Represents 201 x 201 primary and secondary grids
     -5 dictionaries for mesenchymal, epithelial, MM2, ECM concentration, blood vessels (with keeping track of normal or ruptured)
@@ -64,27 +171,44 @@ class PrimaryGrid:
     -value = concentration (int, how many of them there are)
     -Specifc PDES (methods)
     """
-    mes: dict = field(default_factory=dict)  # mesenchymal
-    epi: dict = field(default_factory=dict)  # epithelial
-    MMP2: dict = field(default_factory=dict)  # matrix metalloproteinase-2
-    ECM: dict = field(default_factory=dict)  # extracellular matrix
-    bv: dict = field(default_factory=dict)  # blood vessels
+    mes: np.ndarray = field(default_factory=lambda: np.zeros((WIDTH, HEIGHT), dtype=np.float32)) # mesenchymal
+    epi: np.ndarray = field(default_factory=lambda: np.zeros((WIDTH, HEIGHT), dtype=np.float32)) # epithelial
+    MMP2: np.ndarray = field(default_factory=lambda: np.zeros((WIDTH, HEIGHT), dtype=np.float32)) # matrix metalloproteinase-2
+    ECM: np.ndarray = field(default_factory=lambda: np.ones((WIDTH, HEIGHT), dtype=np.float32)) # extracellular matrix
+    bv: np.ndarray = field(default_factory=lambda: np.zeros((WIDTH, HEIGHT), dtype=np.int8)) # blood vessels
     clusters: List[tuple] = field(default_factory=list)  # clusters leaving
-    time : int = 0 
+    time : float = 0 
+    mes_time : float = 0 
+    epi_time : float = 0 
+    iterations : int = 0
 
     def preview(self, ax):
-        grid = []
-        for i in range(200):
-            grid_row = []
-            for j in range(200):
-                # Replace this with whichever you'd like to preview
-                grid_row.append(self.bv.get((i, j), 0))
-            grid.append(grid_row)
-        
-        ax.clear()
-        ax.imshow(grid)
+        images = [self.mes, self.epi, self.MMP2, self.ECM]
+        titles = ['MES', 'EPI', 'MMP2', 'ECM']
+        cmaps = ['Reds', 'Blues', 'Greens', 'Purples']
+
+        for ax, img, title, cmap in zip(ax, images, titles, cmaps):
+            ax.clear()
+            ax.imshow(img, cmap=cmap, vmin=0, vmax=1)  # fixed scaling
+            ax.set_title(title)
+            ax.set_axis_off()
+
+
+    def __init__(self, gridtype = "primary"):
+        self.mes = np.zeros((WIDTH, HEIGHT), dtype=np.float32)
+        self.epi = np.zeros((WIDTH, HEIGHT), dtype=np.float32)
+        self.MMP2 = np.zeros((WIDTH, HEIGHT), dtype=np.float32)
+        self.ECM = np.ones((WIDTH, HEIGHT), dtype=np.float32)
+        self.bv = np.zeros((WIDTH, HEIGHT), dtype=np.int8)
+        self.clusters = []
+
+        if gridtype == "primary":
+            self.initialize_primary()
+        else:
+            self.initialize_secondary()
 
     # Rishika
+    @time_function("Grid.initialize_primary")
     def initialize_primary(self):
         """
         adds mesechmmal cancer cells cluster in middle
@@ -108,202 +232,195 @@ class PrimaryGrid:
         while i < 10:
             random_x = random.randint(min_coord, max_coord)
             random_y = random.randint(min_coord, max_coord)
-            if (random_x, random_y) in self.bv or dist_points[(random_x, random_y)]<twohundreth:
+            if (in_range(self.bv, (random_x, random_y)) and self.bv[random_x][random_y] != 0) or dist_points[(random_x, random_y)]<twohundreth:
                 continue
             if i < 2:
-                self.bv[(random_x, random_y)] = 5
-                self.bv[(random_x-1, random_y)] = 5
-                self.bv[(random_x, random_y-1)] = 5
-                self.bv[(random_x, random_y+1)] = 5
-                self.bv[(random_x+1, random_y)] = 5
+                # Ruptured vessel
+                self.bv[random_x][random_y] = 2
+                self.bv[random_x-1][random_y] = 2
+                self.bv[random_x][random_y-1] = 2
+                self.bv[random_x][random_y+1] = 2
+                self.bv[random_x+1][random_y] = 2
             else:
-                self.bv[(random_x, random_y)] = 1
+                self.bv[random_x][random_y] = 1
             i += 1
         
         # use middle 97 for the 388 cancer cells 
+        # Cancer cells - center region
+        y, x = np.ogrid[:WIDTH, :HEIGHT]
+        dist_sq = (x - 100)**2 + (y - 100)**2
+        center_mask = (dist_sq <= np.sort(dist_sq.ravel())[96]) & (x >= 2) & (x <= 198) & (y >= 2) & (y <= 198)
+        center_coords = np.argwhere(center_mask)
+        
+        # Place 388 cells (155 epithelial, 233 mesenchymal)
+        cell_indices = np.random.choice(len(center_coords), size=388, replace=True)
+        for idx_num, idx in enumerate(cell_indices):
+            i, j = center_coords[idx]
+            if idx_num < 155:
+                if self.epi[i, j] < 4:
+                    self.epi[i, j] += 1
+            else:
+                if self.mes[i, j] + self.epi[i, j] < 4:
+                    self.mes[i, j] += 1
+    
+    # Rishika
+    @time_function("Grid.initialize_secondary")
+    def initialize_secondary(self):
+        """
+        adds normal vessels to grid
+        """
+        min_coord, max_coord = 2, 198
         i = 0
-        while i < 388:
+        while i < 10:
             random_x = random.randint(min_coord, max_coord)
             random_y = random.randint(min_coord, max_coord)
-            if dist_points[(random_x, random_y)]>ninetyseventh:
+            if (in_range(self.bv, (random_x, random_y)) and self.bv[random_x][random_y] != 0):
                 continue
-            
-            # first 40% are epithelial-like phenotype, and next 60% of mesenchymal-like phenotype
-            epi = self.epi.get((random_x, random_y), 0)
-            if i < 155:
-                if epi == 4:
-                    continue
-                else:
-                    self.epi[(random_x, random_y)] = epi + 1
-                    i+=1
-            else:
-                mes = self.mes.get((random_x, random_y), 0)
-                if epi+mes == 4:
-                    continue
-                else:
-                    self.mes[(random_x, random_y)] = mes + 1
-                    i+=1
+            self.bv[random_x][random_y] = 1
+            i += 1
 
     # Carmen
+    @time_function("Grid.update_MMP2")
     def update_MMP2(self) -> None:
         #m_new = m + dt*(Dm*laplacian(m) + theta*cm - lambda*m)
-        
-        N = 201
-        new = {}
+        # **NOTE: May have to move it back to normal later but rn it is not feasible to 
+        # run simulation in a cost-effective manner without using a library for laplacian**
 
-        for x in range(N):
-            for y in range(N):
-                currMMP2 = self.MMP2.get((x, y), 0)
-                currMes = self.mes.get((x, y), 0)
-
-                #laplacian(m) = (m_x+1,y + m_x-1,y + m_x,y+1 + m_x,y-1 - 4*m_xy)/dx^2
-                up = self.MMP2.get((min(N, x+1), y), 0)
-                down = self.MMP2.get((max(0, x-1), y), 0)
-                right = self.MMP2.get((x, min(y+1, N)), 0)
-                left = self.MMP2.get((x, max(0, y-1)), 0)
-
-                lap_m = (up + down + right + left - 4*currMMP2) / (dx**2)
-                dm_dt = D_m * lap_m + theta*currMes - MMP2_decay*currMMP2
-                newMMP2 = currMMP2 + dt*dm_dt
-
-                new[(x, y)] = newMMP2
-
-        self.MMP2 = new
+        laplacian_m = convolve(self.MMP2, LAPLACIAN_KERNEL, mode='nearest') / (dx**2)
+        dm_dt = D_m * laplacian_m + theta * self.mes - MMP2_decay * self.MMP2
+        self.MMP2 = np.maximum(0, self.MMP2 + dt * dm_dt)
 
     # Carmen
+    @time_function("Grid.update_ECM")
     def update_ECM(self) -> None:
         #new_w = w + dt*-(gamma1*cm + gamma2*m)*w
-        
-        N = 201
-        new = {}
-
-        for x in range(N):
-            for y in range(N):
-                currECM = self.ECM.get((x, y), 1)
-                currMMP2 = self.MMP2.get((x, y), 0)
-                currMes = self.mes.get((x, y), 0)
-
-                dw_dt = -(gamma_1*currMes + gamma_2*currMMP2)*currECM
-                newECM = currECM + dt*dw_dt
-
-                new[(x, y)] = newECM
-        
-        self.ECM = new
+        dw_dt = -(gamma_1 * self.mes + gamma_2 * self.MMP2) * self.ECM
+        self.ECM = np.maximum(0, self.ECM + dt * dw_dt)
 
     # Mia
+    @time_function("Grid.update_mesechymal_movement")
     def update_mesechymal_movement(self) -> None:
         """
         simulate movement
         simulate mitosis
         """
         new_mes = (self.mes).copy()
-        # the order we do this does have effect as we test capacity as we update
-        for (i, j), concentration in self.mes.items():
-            for _ in range(0, concentration):
-                ECM_conc_left = self.ECM[(i-1,j)] if (i-1, j) in self.ECM else 1
-                ECM_conc_right = self.ECM[(i+1,j)] if (i+1, j) in self.ECM else 1
-                ECM_conc_down = self.ECM[(i,j-1)] if (i, j-1) in self.ECM else 1
-                ECM_conc_up = self.ECM[(i,j+1)]  if (i, j+1) in self.ECM else 1
-                z = random.random()
-                prob_move_left = (dt / (dx ** 2)) * (D_M -
-                                  (phi_M/4) * (ECM_conc_right - ECM_conc_left))
-                prob_move_right = (dt / (dx ** 2)) * (D_M +
-                                   (phi_M/4) * (ECM_conc_right - ECM_conc_left))
-                prob_move_down = (dt / (dx ** 2)) * (D_M +
-                                  (phi_M/4) * (ECM_conc_up - ECM_conc_down))
-                prob_move_up = (dt / (dx ** 2)) * (D_M - (phi_M/4)
-                                * (ECM_conc_up - ECM_conc_down))
-                if z < prob_move_left:  # cell moves left
-                    if i > 0 and new_mes.get((i-1, j), 0) <= 3:
-                        new_mes[(i, j)] = new_mes[(i, j)] - 1
-                        new_mes[(i-1, j)] = new_mes[(i-1, j)] + 1 if (i-1, j) in new_mes else 1
-                    else:
-                        continue  # no change if on left boundry or capacity already reached
-                elif z < prob_move_right + prob_move_right:  # cell moves right
-                    if i < 200 and new_mes.get((i+1, j), 0) <= 3:
-                        new_mes[(i, j)] = new_mes[(i, j)] - 1
-                        new_mes[(i+1, j)] = new_mes[(i+1, j)] + 1 if (i+1, j) in new_mes else 1
-                    else:
-                        continue  # no change if on right boundry or capacity already reached
-                elif z < prob_move_down + prob_move_right + prob_move_left:  # cell moves down
-                    if j > 0 and new_mes.get((i, j-1), 0) <= 3:
-                        new_mes[(i, j)] = new_mes[(i, j)] - 1
-                        new_mes[(i, j-1)] = new_mes[(i, j-1)] + 1 if (i, j-1) in new_mes else 1
-                    else:
-                        continue  # no change if on lower boundry or capacity already reached
-                elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
-                    if j < 200 and new_mes.get((i, j+1), 0) <= 3:
-                        new_mes[(i, j)] = new_mes[(i, j)] - 1
-                        new_mes[(i, j+1)] = new_mes[(i, j+1)] + 1 if (i, j+1) in new_mes else 1
-                    else:
-                        continue  # no change if on upper boundry or capacity already reached
+        rows, cols = self.mes.shape
+        for i in range(1, rows - 1):
+            for j in range(1, cols - 1):
+                concentration = self.mes[i][j]
+                for _ in range(0, int(concentration)):
+                    ECM_conc_left = self.ECM[(i-1,j)]
+                    ECM_conc_right = self.ECM[(i+1,j)]
+                    ECM_conc_down = self.ECM[(i,j-1)]
+                    ECM_conc_up = self.ECM[(i,j+1)]
+                    z = random.random()
+                    coeff = dt / (dx ** 2)
+                    dw_dx = ECM_conc_left - ECM_conc_right
+                    dw_dy = ECM_conc_up - ECM_conc_down
+
+                    prob_move_left = coeff * (D_M -
+                                    (phi_M/4) * dw_dx)
+                    prob_move_right = coeff * (D_M +
+                                    (phi_M/4) * dw_dx)
+                    prob_move_down = coeff * (D_M +
+                                    (phi_M/4) * dw_dy)
+                    prob_move_up = coeff * (D_M - (phi_M/4)
+                                    * dw_dy)
+                    if z < prob_move_left:  # cell moves left
+                        if i > 0 and new_mes[i-1][j] <= 3:
+                            new_mes[(i, j)] = new_mes[(i, j)] - 1
+                            new_mes[(i-1, j)] = new_mes[(i-1, j)] + 1
+                        else:
+                            continue  # no change if on left boundry or capacity already reached
+                    elif z < prob_move_left + prob_move_right:  # cell moves right
+                        if i < 200 and new_mes[i+1][j] <= 3:
+                            new_mes[(i, j)] = new_mes[(i, j)] - 1
+                            new_mes[(i+1, j)] = new_mes[(i+1, j)] + 1
+                        else:
+                            continue  # no change if on right boundry or capacity already reached
+                    elif z < prob_move_down + prob_move_right + prob_move_left:  # cell moves down
+                        if j > 0 and new_mes[i][j-1] <= 3:
+                            new_mes[(i, j)] = new_mes[(i, j)] - 1
+                            new_mes[(i, j-1)] = new_mes[(i, j-1)] + 1
+                        else:
+                            continue  # no change if on lower boundry or capacity already reached
+                    elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
+                        if j < 200 and new_mes[i][j+1] <= 3:
+                            new_mes[(i, j)] = new_mes[(i, j)] - 1
+                            new_mes[(i, j+1)] = new_mes[(i, j+1)] + 1
+                        else:
+                            continue  # no change if on upper boundry or capacity already reached
         self.mes = new_mes
 
     def update_mesechymal_mitosis(self) -> None:
-        self.time +=dt 
-        if self.time % T_M == 0: 
-            new_mes = (self.mes).copy()
-            for (i, j), concentration in self.mes.values():
-                new_mes[(i, j)] = concentration * 2 if concentration <= 4 else 4
-            self.mes = new_mes
+        self.mes_time += dt
+        if self.mes_time >= T_M:
+            self.mes = np.minimum(4, self.mes * 2)
+            self.mes_time = 0
 
     # Mia
-
+    @time_function("Grid.update_epithelial_movement")
     def update_epithelial_movement(self) -> None:
         """
         simulate movement
         simulate mitosis
         """
         new_epi = (self.epi).copy()
-        for (i, j), concentration in self.epi.items():
-            for _ in range(0, concentration):
-                ECM_conc_left = self.ECM[(i-1,j)] if (i-1, j) in self.ECM else 1
-                ECM_conc_right = self.ECM[(i+1,j)] if (i+1, j) in self.ECM else 1
-                ECM_conc_down = self.ECM[(i,j-1)] if (i, j-1) in self.ECM else 1
-                ECM_conc_up = self.ECM[(i,j+1)]  if (i, j+1) in self.ECM else 1
-                z = random.random()
-                prob_move_left = (dt / (dx ** 2)) * (D_E -
-                                  (phi_E/4) * (ECM_conc_right - ECM_conc_left))
-                prob_move_right = (dt / (dx ** 2)) * (D_E +
-                                   (phi_E/4) * (ECM_conc_right - ECM_conc_left))
-                prob_move_down = (dt / (dx ** 2)) * (D_E +
-                                  (phi_E/4) * (ECM_conc_up - ECM_conc_down))
-                prob_move_up = (dt / (dx ** 2)) * (D_E - (phi_E/4)
-                                * (ECM_conc_up - ECM_conc_down))
-                if z < prob_move_left:
-                    if i > 0 and new_epi.get((i-1, j), 0) <= 3:
-                        new_epi[(i, j)] = new_epi[(i, j)] - 1
-                        new_epi[(i-1, j)] = new_epi[(i-1, j)] + 1 if (i-1, j) in new_epi else 1
-                    else:
-                        continue
-                elif z < prob_move_right + prob_move_left:
-                    if i < 200 and new_epi.get((i+1, j), 0) <= 3:
-                        new_epi[(i, j)] = new_epi[(i, j)] - 1
-                        new_epi[(i+1, j)] = new_epi[(i+1, j)] + 1 if (i+1, j) in new_epi else 1
-                    else:
-                        continue
-                elif z < prob_move_down + prob_move_right + prob_move_left:
-                    if j > 0 and new_epi.get((i, j-1), 0) <= 3:
-                        new_epi[(i, j)] = new_epi[(i, j)] - 1
-                        new_epi[(i, j-1)] = new_epi[(i, j-1)] + 1 if (i, j-1) in new_epi else 1
-                    else:
-                        continue
-                elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
-                    if j < 200 and new_epi.get((i, j+1), 0) <= 3:
-                        new_epi[(i, j)] = new_epi[(i, j)] - 1
-                        new_epi[(i, j+1)] = new_epi[(i, j+1)] + 1 if (i, j+1) in new_epi else 1
-                    else:
-                        continue
+        rows, cols = self.epi.shape
+        for i in range(1, rows - 1):
+            for j in range(1, cols - 1):
+                cell_count = int(self.epi[i][j])
+                for _ in range(0, cell_count):
+                    ECM_conc_left = self.ECM[(i-1,j)]
+                    ECM_conc_right = self.ECM[(i+1,j)]
+                    ECM_conc_down = self.ECM[(i,j-1)]
+                    ECM_conc_up = self.ECM[(i,j+1)]
+                    dw_dx = ECM_conc_right - ECM_conc_left
+                    dw_dy = ECM_conc_up - ECM_conc_down
+
+                    z = random.random()
+                    prob_move_left = (dt / (dx ** 2)) * (D_E -
+                                    (phi_E/4) * dw_dx)
+                    prob_move_right = (dt / (dx ** 2)) * (D_E +
+                                    (phi_E/4) * dw_dx)
+                    prob_move_down = (dt / (dx ** 2)) * (D_E +
+                                    (phi_E/4) * dw_dy)
+                    prob_move_up = (dt / (dx ** 2)) * (D_E - (phi_E/4)
+                                    * dw_dy)
+                    if z < prob_move_left:
+                        if i > 0 and new_epi[i-1][j] <= 3:
+                            new_epi[(i, j)] = new_epi[(i, j)] - 1
+                            new_epi[(i-1, j)] = new_epi[(i-1, j)] + 1
+                        else:
+                            continue
+                    elif z < prob_move_right + prob_move_left:
+                        if i < 200 and new_epi[i+1][j] <= 3:
+                            new_epi[(i, j)] = new_epi[(i, j)] - 1
+                            new_epi[(i+1, j)] = new_epi[(i+1, j)] + 1
+                        else:
+                            continue
+                    elif z < prob_move_down + prob_move_right + prob_move_left:
+                        if j > 0 and new_epi[i][j-1] <= 3:
+                            new_epi[(i, j)] = new_epi[(i, j)] - 1
+                            new_epi[(i, j-1)] = new_epi[(i, j-1)] + 1
+                        else:
+                            continue
+                    elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
+                        if j < 200 and new_epi[i][j+1] <= 3:
+                            new_epi[(i, j)] = new_epi[(i, j)] - 1
+                            new_epi[(i, j+1)] = new_epi[(i, j+1)] + 1
+                        else:
+                            continue
         self.epi = new_epi
 
     def update_epithelial_mitosis(self) -> None:
-        self.time +=dt 
-        if self.time % T_E == 0: 
-            new_epi = (self.epi).copy()
-            for (i, j), concentration in self.epi.values():
-                new_epi[(i, j)] = concentration * 2 if concentration <= 4 else 4
-            self.epi = new_epi
+        self.epi_time += dt
+        if self.epi_time >= T_M:
+            self.epi = np.minimum(4, self.epi * 2)
+            self.epi_time = 0
     
+    @time_function("Grid.find_intravasating_clusters")
     def find_intravasating_clusters(self):
         # List: (mes count, epi count)
         clusters = []
@@ -314,271 +431,101 @@ class PrimaryGrid:
         def neighbors4(i, j):
             out = []
             if i > 0: out.append((i - 1, j))
-            if i < 200: out.append((i + 1, j))
+            if i < WIDTH - 1: out.append((i + 1, j))
             if j > 0: out.append((i, j - 1))
-            if j < 200: out.append((i, j + 1))
+            if j < WIDTH - 1: out.append((i, j + 1))
             return out
 
         # Set of visited clusters
         visited = set()
-        for (i, j), vessel_type in self.bv.items():
-            # No vessel there, skip
-            if vessel_type not in (1, 2):
-                continue
 
-            num_mes = mes.get((i, j), 0)
-            num_epi = epi.get((i, j), 0)
-            to_collect = []
-
-            if vessel_type == 1:
-                if num_mes == 0:
+        rows, cols = self.epi.shape
+        for i in range(rows):
+            for j in range(cols):
+                vessel_type = self.bv[i][j]
+                # No vessel there, skip
+                if vessel_type not in (1, 2):
                     continue
-            
-                to_collect = [(i, j) + neighbors4(i, j)]
-            elif vessel_type == 2:
-                if num_mes == 0 and num_epi == 0:
-                    continue
-            
-                to_collect = [(i, j)] + neighbors4(i, j)
-            
-            total_mes = 0
-            total_epi = 0
 
-            for loc in to_collect:
-                # Location's been visited already, skip
-                if loc in visited:
-                    continue
-                visited.add(loc)
+                num_mes = mes[i][j]
+                num_epi = epi[i][j]
+                to_collect = []
 
-                total_mes += mes.get(loc, 0)
-                total_epi += epi.get(loc, 0)
-            
-            for loc in to_collect:
-                if loc in mes:
-                    del mes[loc]
-                if loc in epi:
-                    del epi[loc]
-            
-            if total_mes + total_epi > 0:
-                clusters.append((total_mes, total_epi, 0))
+                if vessel_type == 1:
+                    if num_mes == 0:
+                        continue
+                
+                    to_collect = [(i, j), *neighbors4(i, j)]
+                elif vessel_type == 2:
+                    if num_mes == 0 and num_epi == 0:
+                        continue
+                
+                    to_collect = [(i, j)] + neighbors4(i, j)
+                
+                total_mes = 0
+                total_epi = 0
+
+                for loc in to_collect:
+                    # Location's been visited already, skip
+                    if loc in visited:
+                        continue
+                    visited.add(loc)
+                    i, j = loc
+
+                    total_mes += mes[i][j]
+                    total_epi += epi[i][j]
+                
+                for loc in to_collect:
+                    if in_range(mes, loc):
+                        i, j = loc
+                        mes[i][j] = 0
+                    if in_range(epi, loc):
+                        i, j = loc
+                        epi[i][j] = 0
+                
+                if total_mes + total_epi > 0:
+                    clusters.append((total_mes, total_epi, 0))
             
         return clusters
 
     # Sarah
-    def update_all(self) -> None:  # list of cells that move into vasculature
+    def update_all(self, primary = None) -> None:  # list of cells that move into vasculature
         """
         update MMP2 then ECM then mesechymal then epithelial
         figures out what cells are on blood vessels and removes them from dicts
         adds clusters leaving to self.cluster
         """
-        self.update_MMP2()
-        self.update_ECM()
-        self.update_mesechymal_movement()
-        self.update_epithelial_movement()
+        if primary is None:
+            self.update_MMP2()
+            self.update_ECM()
+            self.update_mesechymal_movement()
+            self.update_epithelial_movement()
 
-        new_clusters = self.find_intravasating_clusters()
+            new_clusters = self.find_intravasating_clusters()
 
-        self.clusters.extend(new_clusters)
-        self.update_mesechymal_mitosis()
-        self.update_epithelial_mitosis()
+            self.clusters.extend(new_clusters)
+            self.update_mesechymal_mitosis()
+            self.update_epithelial_mitosis()
+        else:
+            """
+            add the new cells to the current clusters
+            iterate through the clusters
+            increment time
+            assign leaving clusters to new locations, and store in class attribute
+            """
+            self.update_MMP2()
+            self.update_ECM()
+            self.update_mesechymal_movement()
+            self.update_epithelial_movement()
 
+            new_clusters = self.find_intravasating_clusters()
 
-
-
-class SecondaryGrid:
-    """
-    Represents 201 x 201 primary and secondary grids
-    -5 dictionaries for mesenchymal, epithelial, MM2, ECM concentration, blood vessels)
-    -key = location (tuple)
-    -value = concentration (int, how many of them there are)
-    -Specifc PDES (methods)
-    """
-    mes: dict = dict()  # mesenchymal
-    epi: dict = dict()  # epithelial
-    MMP2: dict = dict()  # matrix metalloproteinase-2
-    ECM: dict = dict()  # extracellular matrix
-    bv: dict = dict()  # blood vessels
-    clusters: List[tuple] = []  # clusters leaving
-    time : int = 0 
-
-    # Rishika
-    def initialize_secondary(self):
-        """
-        adds normal vessels to grid
-        """
-        min_coord, max_coord = 2, 198
-        i = 0
-        while i < 10:
-            random_x = random.randint(min_coord, max_coord)
-            random_y = random.randint(min_coord, max_coord)
-            if (random_x, random_y) in self.bv:
-                continue
-            self.bv[(random_x, random_y)] = 1
-            i += 1
-
-    # Carmen
-    def update_MMP2(self) -> None:
-        #m_new = m + dt*(Dm*laplacian(m) + theta*cm - lambda*m)
+            self.clusters.extend(new_clusters)
+            self.update_mesechymal_mitosis()
+            self.update_epithelial_mitosis()
         
-        N = 201
-        new = {}
+        self.iterations += 1
 
-        for x in range(N):
-            for y in range(N):
-                currMMP2 = self.MMP2.get((x, y), 0)
-                currMes = self.mes.get((x, y), 0)
-
-                #laplacian(m) = (m_x+1,y + m_x-1,y + m_x,y+1 + m_x,y-1 - 4*m_xy)/dx^2
-                up = self.MMP2.get((min(N, x+1), y), 0)
-                down = self.MMP2.get((max(0, x-1), y), 0)
-                right = self.MMP2.get((x, min(y+1, N)), 0)
-                left = self.MMP2.get((x, max(0, y-1)), 0)
-
-                lap_m = (up + down + right + left - 4*currMMP2) / (dx**2)
-                dm_dt = D_m * lap_m + theta*currMes - MMP2_decay*currMMP2
-                newMMP2 = currMMP2 + dt*dm_dt
-
-                new[(x, y)] = newMMP2
-
-        self.MMP2 = new
-
-    # Carmen
-    def update_ECM(self) -> None:
-        #new_w = w + dt*-(gamma1*cm + gamma2*m)*w
-        
-        N = 201
-        new = {}
-
-        for x in range(N):
-            for y in range(N):
-                currECM = self.ECM.get((x, y), 1)
-                currMMP2 = self.MMP2.get((x, y), 0)
-                currMes = self.mes.get((x, y), 0)
-
-                dw_dt = -(gamma_1*currMes + gamma_2*currMMP2)*currECM
-                newECM = currECM + dt*dw_dt
-
-                new[(x, y)] = newECM
-        
-        self.ECM = new
-
-    # Mia
-    def update_mesechymal_movement(self) -> None:
-        """
-        simulate movement
-        simulate mitosis
-        """
-        new_mes = (self.mes).copy()
-        for (i,j), concentration in self.mes.items(): #the order we do this does have effect as we test capacity as we update
-            for _ in range(0,concentration):
-                ECM_conc_left = self.ECM[(i-1,j)] if (i-1, j) in self.ECM else 1
-                ECM_conc_right = self.ECM[(i+1,j)] if (i+1, j) in self.ECM else 1
-                ECM_conc_down = self.ECM[(i,j-1)] if (i, j-1) in self.ECM else 1
-                ECM_conc_up = self.ECM[(i,j+1)]  if (i, j+1) in self.ECM else 1
-                z = random.random() 
-                prob_move_left = (dt / (dx ** 2)) * (D_M - (phi_M/4) *  (ECM_conc_right - ECM_conc_left))
-                prob_move_right = (dt / (dx ** 2)) * (D_M + (phi_M/4) *  (ECM_conc_right - ECM_conc_left))
-                prob_move_down = (dt / (dx ** 2)) * (D_M + (phi_M/4) *  (ECM_conc_up- ECM_conc_down))
-                prob_move_up  = (dt / (dx ** 2)) * (D_M - (phi_M/4) *  (ECM_conc_up- ECM_conc_down))
-                if z < prob_move_left:  # cell moves left
-                    if i > 0 and new_mes[(i-1, j)] <= 3:
-                        new_mes[(i, j)] = new_mes[(i, j)] - 1
-                        new_mes[(i-1, j)] = new_mes[(i-1, j)] + 1 if (i-1, j) in new_mes else 1
-                    else:
-                        continue  # no change if on left boundry or capacity already reached
-                elif z < prob_move_right + prob_move_right:  # cell moves right
-                    if i < 200 and new_mes[(i+1, j)] <= 3:
-                        new_mes[(i, j)] = new_mes[(i, j)] - 1
-                        new_mes[(i+1, j)] = new_mes[(i+1, j)] + 1 if (i+1, j) in new_mes else 1
-                    else:
-                        continue  # no change if on right boundry or capacity already reached
-                elif z < prob_move_down + prob_move_right + prob_move_left:  # cell moves down
-                    if j > 0 and new_mes[(i, j-1)] <= 3:
-                        new_mes[(i, j)] = new_mes[(i, j)] - 1
-                        new_mes[(i, j-1)] = new_mes[(i, j-1)] + 1 if (i, j-1) in new_mes else 1
-                    else:
-                        continue  # no change if on lower boundry or capacity already reached
-                elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
-                    if j < 200 and new_mes[(i, j+1)] <= 3:
-                        new_mes[(i, j)] = new_mes[(i, j)] - 1
-                        new_mes[(i, j+1)] = new_mes[(i, j+1)] + 1 if (i, j+1) in new_mes else 1
-                    else:
-                        continue  # no change if on upper boundry or capacity already reached
-        self.mes = new_mes      
-
-    def update_mesechymal_mitosis(self) -> None:
-        self.time+=dt
-        if self.time % T_M == 0: 
-            new_mes = (self.mes).copy()
-            for (i, j), concentration in self.mes.values():
-                new_mes[(i, j)] = concentration * 2 if concentration * 2 <= 4 else 4
-            self.mes = new_mes
-
-    #Mia
-    def update_epithelial_movement(self) -> None:
-        """
-        simulate movement 
-        simulate mitosis 
-        """
-        new_epi = (self.epi).copy()
-        for (i,j), concentration in self.epi.items(): 
-            for _ in range(0,concentration): 
-                ECM_conc_left = self.ECM[(i-1,j)] if (i-1, j) in self.ECM else 1
-                ECM_conc_right = self.ECM[(i+1,j)] if (i+1, j) in self.ECM else 1
-                ECM_conc_down = self.ECM[(i,j-1)] if (i, j-1) in self.ECM else 1
-                ECM_conc_up = self.ECM[(i,j+1)]  if (i, j+1) in self.ECM else 1
-                z = random.random() 
-                prob_move_left = (dt / (dx * 2)) * (D_E - (phi_E/4) *  (ECM_conc_right - ECM_conc_left))
-                prob_move_right = (dt / (dx * 2)) * (D_E + (phi_E/4) *  (ECM_conc_right - ECM_conc_left))
-                prob_move_down = (dt / (dx * 2)) * (D_E + (phi_E/4) *  (ECM_conc_up- ECM_conc_down))
-                prob_move_up  = (dt / (dx * 2)) * (D_E - (phi_E/4) *  (ECM_conc_up- ECM_conc_down))
-                if z < prob_move_left:
-                    if i > 0 and new_epi[(i-1, j)] <= 4:
-                        new_epi[(i, j)] = new_epi[(i, j)] - 1
-                        new_epi[(i-1, j)] = new_epi[(i-1, j)] + 1 if (i-1, j) in new_epi else 1
-                    else:
-                        continue
-                elif z < prob_move_right + prob_move_left:
-                    if i < 200 and new_epi[(i+1, j)] <= 3:
-                        new_epi[(i, j)] = new_epi[(i, j)] - 1
-                        new_epi[(i+1, j)] = new_epi[(i+1, j)] + 1 if (i+1, j) in new_epi else 1
-                    else:
-                        continue
-                elif z < prob_move_down + prob_move_right + prob_move_left:
-                    if j > 0 and new_epi[(i, j-1)] <= 3:
-                        new_epi[(i, j)] = new_epi[(i, j)] - 1
-                        new_epi[(i, j-1)] = new_epi[(i, j-1)] + 1 if (i, j-1) in new_epi else 1
-                    else:
-                        continue
-                elif z < prob_move_down + prob_move_right + prob_move_left + prob_move_up:
-                    if j < 200 and new_epi[(i, j+1)] <= 3:
-                        new_epi[(i, j)] = new_epi[(i, j)] - 1
-                        new_epi[(i, j+1)] = new_epi[(i, j+1)] + 1 if (i, j+1) in new_epi else 1
-                    else:
-                        continue
-        self.epi = new_epi 
-        
-    def update_epithelial_mitosis(self) -> None:
-        self.time+=dt
-        if self.time % T_E == 0: 
-            new_epi = (self.epi).copy()
-            for (i, j), concentration in self.epi.values():
-                new_epi[(i, j)] = concentration * 2 if concentration <= 4 else 4
-            self.epi = new_epi
-        
-    #Sarah    
-    def update_all(self, clusters: List[tuple[int, int]]) -> None: # list of cells that move into vasculature
-        """
-        update MMP2 then ECM then mesechymal then epithelial
-        figures out what cells are coming in through the blood vessels and add them to the dicts
-        """
-        self.update_MMP2()
-        self.update_ECM()
-        self.update_mesechymal_movement()
-        self.update_epithelial_movement()
-        self.update_mesechymal_mitosis()
-        self.update_epithelial_mitosis()
-        #need to do: figures out what cells are coming in through the blood vessels and add them to the dicts
 
 
 """
@@ -593,15 +540,6 @@ class Vascular:
     lungs: List[tuple[int, int]] = field(default_factory=list)
     liver: List[tuple[int, int]] = field(default_factory=list)
 
-    def probExit(self, time, k, midpoint):
-        """
-        returns a probability of a cell leaving the vasculature
-        probability increases as time increases
-        time = how long cell has been in vasculature
-        k = curve smoothness; default = .5
-        midpoint = 1/2 vasc_time. So when time == midpint, probability of exiting = .5
-        """
-        return 1 / (1 + math.exp(-k * (time - midpoint)))
     def update_all(self, primary) -> None:
         """
         add the new cells to the current clusters
@@ -617,11 +555,10 @@ class Vascular:
             mes = cluster[0]
             epi = cluster[1]
             time = cluster[2]
-            leaveProb = self.probExit(time, .5, vasc_time/2) # added random time of leaving instead of fixed time
-            if random.random() < leaveProb:
+            if time == vasc_time:
                 leavingVascular.append(cluster)
                 continue
-            time +=1 #maybe this should be dt? -mia
+            time += dt #maybe this should be dt? -mia 
             # checking to see if they disaggregate
             if time >= vasc_time/2 and mes+epi >1:
                 disaggregate_mes = 0
@@ -678,11 +615,11 @@ class Model:
     One secondary liver grid object : (secondary grid class)
     move time step method?
     """
-    breast: PrimaryGrid = field(default_factory=PrimaryGrid)
+    breast: Grid = field(default_factory=Grid)
     vascular: Vascular = field(default_factory=Vascular)
-    bones : SecondaryGrid = field(default_factory=SecondaryGrid)
-    lungs : SecondaryGrid = field(default_factory=SecondaryGrid)
-    liver : SecondaryGrid = field(default_factory=SecondaryGrid)
+    bones : Grid = field(default_factory=lambda: Grid("secondary"))
+    lungs : Grid = field(default_factory=lambda: Grid("secondary"))
+    liver : Grid = field(default_factory=lambda: Grid("secondary"))
     
     #Sarah
     def initialize(self) -> None: 
@@ -691,6 +628,7 @@ class Model:
         populations breast with blood vessels, and cancer cells         
         """
         # Init breast tumor + vessels
+        print("Initializing")
         self.breast.initialize_primary()
         for g in [self.bones, self.lungs, self.liver]:
             g.initialize_secondary()
@@ -717,8 +655,8 @@ class Model:
 
     
 def main():
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    fig, axs = plt.subplots(1, 4, figsize=(16, 4))
+    axs = np.array(axs)  # ensures indexing works even if ncols=1
     # create a model
     model = Model()
     # initialize model (populating with blood vessels and cells)
@@ -731,8 +669,13 @@ def main():
         #update the model 
         model.update()
         
-        model.preview(ax)
-    _ = animation.FuncAnimation(fig, animate, interval=10)
+        model.preview(axs)
+
+    ani = animation.FuncAnimation(fig, animate, frames=count, interval=10)
+
+
+    ani.save("simulation.gif", writer='pillow', fps=10)
+
     plt.show()
 
 if __name__ == "__main__":
