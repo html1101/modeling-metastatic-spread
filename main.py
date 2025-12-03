@@ -271,7 +271,7 @@ class PrimaryGrid:
                 prob_move_up = (dt / (dx ** 2)) * (D_E - (phi_E/4)
                                 * (ECM_conc_up - ECM_conc_down))
                 if z < prob_move_left:
-                    if i > 0 and new_epi.get((i-1, j), 0) <= 4:
+                    if i > 0 and new_epi.get((i-1, j), 0) <= 3:
                         new_epi[(i, j)] = new_epi[(i, j)] - 1
                         new_epi[(i-1, j)] = new_epi[(i-1, j)] + 1 if (i-1, j) in new_epi else 1
                     else:
