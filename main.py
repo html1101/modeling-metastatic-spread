@@ -383,7 +383,7 @@ class Grid:
                     prob_move_up = (dt / (dx ** 2)) * (D_E - (phi_E/4)
                                     * dw_dy)
                     if z < prob_move_left:
-                        if i > 0 and new_epi[i-1][j] <= 4:
+                        if i > 0 and new_epi[i-1][j] <= 3:
                             new_epi[(i, j)] = new_epi[(i, j)] - 1
                             new_epi[(i-1, j)] = new_epi[(i-1, j)] + 1
                         else:
