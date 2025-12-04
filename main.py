@@ -229,7 +229,7 @@ class Grid:
         ninetyseventh = dist_list[96]
         min_coord, max_coord = 2, 198
         i = 0
-        while i < 10:
+        while i < 50:
             random_x = random.randint(min_coord, max_coord)
             random_y = random.randint(min_coord, max_coord)
             if (in_range(self.bv, (random_x, random_y)) and self.bv[random_x][random_y] != 0) or dist_points[(random_x, random_y)]<twohundreth:
@@ -635,7 +635,7 @@ class Vascular:
             if time == vasc_time:
                 leavingVascular.append(cluster)
                 continue
-            time += dt #maybe this should be dt? -mia 
+            time += 1 #maybe this should be dt? -mia 
             # checking to see if they disaggregate
             if time >= vasc_time/2 and mes+epi >1:
                 disaggregate_mes = 0
