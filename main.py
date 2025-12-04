@@ -4,6 +4,7 @@ from typing import List
 import random
 import matplotlib
 matplotlib.use("Agg")  # Use a non-interactive backend
+import math
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -355,7 +356,10 @@ class Grid:
 
     def update_mesechymal_mitosis(self) -> None:
         self.mes_time += dt
-        if self.mes_time >= T_M:
+        raw = np.random.exponential(T_M)
+        mitosisProb = raw / T_M
+
+        if random.random() <= mitosisProb:
             self.mes = np.minimum(4, self.mes * 2)
             self.mes_time = 0
 
@@ -416,7 +420,10 @@ class Grid:
 
     def update_epithelial_mitosis(self) -> None:
         self.epi_time += dt
-        if self.epi_time >= T_M:
+        raw = np.random.exponential(T_M)
+        mitosisProb = raw / T_M
+
+        if random.random() <= mitosisProb:
             self.epi = np.minimum(4, self.epi * 2)
             self.epi_time = 0
     
@@ -540,6 +547,15 @@ class Vascular:
     lungs: List[tuple[int, int]] = field(default_factory=list)
     liver: List[tuple[int, int]] = field(default_factory=list)
 
+    def probExit(self, time, k, midpoint):
+        """
+        returns a probability of a cell leaving the vasculature
+        probability increases as time increases
+        time = how long cell has been in vasculature
+        k = curve smoothness; default = .5
+        midpoint = 1/2 vasc_time. So when time == midpint, probability of exiting = .5
+        """
+        return 1 / (1 + math.exp(-k * (time - midpoint)))
     def update_all(self, primary) -> None:
         """
         add the new cells to the current clusters
@@ -555,7 +571,8 @@ class Vascular:
             mes = cluster[0]
             epi = cluster[1]
             time = cluster[2]
-            if time == vasc_time:
+            leaveProb = self.probExit(time, .5, vasc_time / 2)  # added random time of leaving instead of fixed time
+            if random.random() < leaveProb:
                 leavingVascular.append(cluster)
                 continue
             time += dt #maybe this should be dt? -mia 
