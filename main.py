@@ -658,6 +658,7 @@ class Vascular:
                     updatedClusters.append((0, 1, time))
             else:
                 updatedClusters.append((mes, epi, time))
+        self.clusters = updatedClusters
         bones = []
         lungs = []
         liver = []
