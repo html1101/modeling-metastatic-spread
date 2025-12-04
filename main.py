@@ -175,17 +175,23 @@ class Grid:
     epi_time : float = 0 
     iterations : int = 0
 
-    def preview(self, fig, ax):
-        fig.suptitle("Cancer Cell Model - {} iterations".format(self.iterations))
-        ax[0].clear()
-        ax[0].set_title("Mesenchymal-like cancer cells")
-        ax[0].imshow(self.mes, cmap=cmap_mes)
-        ax[0].imshow(self.bv, cmap=cmap_bv)
+    def preview(self, fig, ax, celltype = "breast"):
+        # fig.suptitle("Cancer Cell Model ({}) - {} iterations".format(celltype, self.iterations))
+        # ax[0].clear()
+        # ax[0].set_title("Mesenchymal-like cancer cells")
+        # ax[0].imshow(self.mes, cmap=cmap_mes)
+        # ax[0].imshow(self.bv, cmap=cmap_bv)
 
-        ax[1].clear()
-        ax[1].set_title("Epithelial-like cancer cells")
-        ax[1].imshow(self.epi, cmap=cmap_epi)
-        ax[1].imshow(self.bv, cmap=cmap_bv)
+        # ax[1].clear()
+        # ax[1].set_title("Epithelial-like cancer cells")
+        # ax[1].imshow(self.epi, cmap=cmap_epi)
+        # ax[1].imshow(self.bv, cmap=cmap_bv)
+        # Save this iteration's arrays
+
+        if self.iterations % 10 == 0:
+            np.savez_compressed(F'arrays/iter-{celltype}-{self.iterations}.npz',
+                                epi=self.epi, bv=self.bv,
+                                mes=self.mes, MMP2=self.MMP2, ECM=self.ECM)
 
 
     def __init__(self, gridtype = "primary"):
@@ -420,7 +426,7 @@ class Grid:
             self.epi_time = 0
     
     @time_function("Grid.extravasate_clusters")
-    def extravasate_clusters(self, incoming_clusters):
+    def extravasate_clusters(self, incoming_clusters, prob):
         """
         Upon extravasion, tumor cells exit vasculature into
         secondary tissue via vessel node, then disperse locally
@@ -435,6 +441,10 @@ class Grid:
         - If cell can fit at (i, j), place into neighbor
         - If all neighbors full, drop excess cells
         """
+
+        if np.random.random() > prob:
+            # Can't extravasate, likelihood wasn't good enough
+            return
 
         if not incoming_clusters:
             return
@@ -712,9 +722,9 @@ class Model:
         self.vascular.update_all(prev_primary_grid)
         
         # Extravasion:
-        self.bones.extravasate_clusters(prev_vasc.bones)
-        self.lungs.extravasate_clusters(prev_vasc.lungs)
-        self.liver.extravasate_clusters(prev_vasc.liver)
+        self.bones.extravasate_clusters(prev_vasc.bones, E_1)
+        self.lungs.extravasate_clusters(prev_vasc.lungs, E_2)
+        self.liver.extravasate_clusters(prev_vasc.liver, E_3)
 
         # passing in the previous cells that will migrate to bones, lungs, liver
         self.bones.update_all(prev_vasc.bones)
@@ -725,7 +735,10 @@ class Model:
         """
         Create a visual of the grid
         """
-        self.breast.preview(fig, ax)
+        self.breast.preview(fig, ax, "breast")
+        self.bones.preview(fig, ax, "bones")
+        self.lungs.preview(fig, ax, "lungs")
+        self.liver.preview(fig, ax, "liver")
 
     
 def main():
@@ -746,7 +759,7 @@ def main():
 
         if count % 10 == 0:
             print(f"Iteration {count}")
-            fig.savefig(F"simulation/simulation-{count}.png")
+            # fig.savefig(F"simulation/simulation-{count}.png")
         
         count += 1
         model.preview(fig, ax)
