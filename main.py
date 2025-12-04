@@ -310,17 +310,19 @@ class Grid:
                     ECM_conc_up = self.ECM[(i,j+1)]
                     z = random.random()
                     coeff = dt / (dx ** 2)
-                    dw_dx = ECM_conc_left - ECM_conc_right
-                    dw_dy = ECM_conc_up - ECM_conc_down
+                    dw_dx = (ECM_conc_right - ECM_conc_left) / 2
+                    dw_dy = (ECM_conc_up - ECM_conc_down) / 2
 
-                    prob_move_left = coeff * (D_M -
-                                    (phi_M/4) * dw_dx)
-                    prob_move_right = coeff * (D_M +
-                                    (phi_M/4) * dw_dx)
-                    prob_move_down = coeff * (D_M +
-                                    (phi_M/4) * dw_dy)
-                    prob_move_up = coeff * (D_M - (phi_M/4)
-                                    * dw_dy)
+                    prob_left = coeff * (D_M - phi_M * dw_dx)
+                    prob_right = coeff * (D_M + phi_M * dw_dx)
+                    prob_down = coeff * (D_M - phi_M * dw_dy)
+                    prob_up = coeff * (D_M + phi_M * dw_dy)
+
+                    probs = np.maximum(np.array([prob_left, prob_right, prob_down, prob_up]), 0.0)
+                    total = np.sum(probs)
+
+                    [prob_move_left, prob_move_right, prob_move_down, prob_move_up] = probs / max(total, 1.0)
+
                     if z < prob_move_left:  # cell moves left
                         if i > 0 and new_mes[i-1][j] <= 3:
                             new_mes[(i, j)] = new_mes[(i, j)] - 1
@@ -357,8 +359,7 @@ class Grid:
     @time_function("Grid.update_epithelial_movement")
     def update_epithelial_movement(self) -> None:
         """
-        simulate movement
-        simulate mitosis
+        Simulate epithelial movement
         """
         new_epi = (self.epi).copy()
         rows, cols = self.epi.shape
@@ -370,18 +371,22 @@ class Grid:
                     ECM_conc_right = self.ECM[(i+1,j)]
                     ECM_conc_down = self.ECM[(i,j-1)]
                     ECM_conc_up = self.ECM[(i,j+1)]
-                    dw_dx = ECM_conc_right - ECM_conc_left
-                    dw_dy = ECM_conc_up - ECM_conc_down
+                    dw_dx = (ECM_conc_right - ECM_conc_left) / 2
+                    dw_dy = (ECM_conc_up - ECM_conc_down) / 2
+                    coeff = dt / (dx ** 2)
+
+                    prob_left = coeff * (D_E - phi_E * dw_dx)
+                    prob_right = coeff * (D_E + phi_E * dw_dx)
+                    prob_down = coeff * (D_E - phi_E * dw_dy)
+                    prob_up = coeff * (D_E + phi_E * dw_dy)
+
+                    probs = np.maximum(np.array([prob_left, prob_right, prob_down, prob_up]), 0.0)
+                    total = np.sum(probs)
+                    if total > 1:
+                        probs /= total
+                    [prob_move_left, prob_move_right, prob_move_down, prob_move_up] = probs
 
                     z = random.random()
-                    prob_move_left = (dt / (dx ** 2)) * (D_E -
-                                    (phi_E/4) * dw_dx)
-                    prob_move_right = (dt / (dx ** 2)) * (D_E +
-                                    (phi_E/4) * dw_dx)
-                    prob_move_down = (dt / (dx ** 2)) * (D_E +
-                                    (phi_E/4) * dw_dy)
-                    prob_move_up = (dt / (dx ** 2)) * (D_E - (phi_E/4)
-                                    * dw_dy)
                     if z < prob_move_left:
                         if i > 0 and new_epi[i-1][j] <= 3:
                             new_epi[(i, j)] = new_epi[(i, j)] - 1
@@ -410,10 +415,79 @@ class Grid:
 
     def update_epithelial_mitosis(self) -> None:
         self.epi_time += dt
-        if self.epi_time >= T_M:
+        if self.epi_time >= T_E:
             self.epi = np.minimum(4, self.epi * 2)
             self.epi_time = 0
     
+    @time_function("Grid.extravasate_clusters")
+    def extravasate_clusters(self, incoming_clusters):
+        """
+        Upon extravasion, tumor cells exit vasculature into
+        secondary tissue via vessel node, then disperse locally
+
+        Ex. for each cluster going to grid:
+        - cluster = (mes, epi)
+        - Select random vessel coordinate (i, j)
+        - Place cells into (i, j) or neighboring sites until all cells assigned
+
+        Rules:
+        - Max occupancy = 4
+        - If cell can fit at (i, j), place into neighbor
+        - If all neighbors full, drop excess cells
+        """
+
+        if not incoming_clusters:
+            return
+
+        # Blood vessel locations
+        vessel_coords = np.argwhere(self.bv > 0)
+        if len(vessel_coords) == 0:
+            # No bvs to extravasate to
+            return
+        
+        for mes_count, epi_count in incoming_clusters:
+            # Choose a random one of the vessels
+            idx = random.randint(0, len(vessel_coords) - 1)
+            i, j = vessel_coords[idx]
+
+            # Take all coords around an incoming cluster
+            queue = [
+                (x, y) for (x, y) in
+                [(i, j), (i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]
+                if 0 <= x < WIDTH and 0 <= y < HEIGHT
+            ]
+
+            remaining_m = mes_count
+            remaining_e = epi_count
+
+            for (x, y) in queue:
+                # Move mes cells into this new space around i, j if
+                # there's room (if space > 0)
+                space = 4 - (self.mes[x, y] + self.epi[x, y])
+                if space <= 0:
+                    continue
+                
+                add = min(space, remaining_m)
+                self.mes[x, y] += add
+                remaining_m -= add
+                if remaining_m == 0:
+                    break
+            
+            for (x, y) in queue:
+                # Move epi cells into this new space around i, j if
+                # there's room (if space > 0)
+                space = 4 - (self.mes[x, y] + self.epi[x, y])
+                if space <= 0:
+                    continue
+                
+                add = min(space, remaining_m)
+                self.epi[x, y] += add
+                remaining_m -= add
+                if remaining_e == 0:
+                    break
+            
+
+
     @time_function("Grid.find_intravasating_clusters")
     def find_intravasating_clusters(self):
         # List: (mes count, epi count)
@@ -526,7 +600,6 @@ class Grid:
 Set up vascular class 
 - List of cell clusters in vascular (#mesenchyml, #epithelia, time)
 """
-#Funny Joelle 😂😂😂
 @dataclass
 class Vascular:
     clusters: List[tuple[int, int, int]] = field(default_factory=list) # (# mes, # epi, time)
@@ -584,7 +657,8 @@ class Vascular:
             else:
                 prob = P_C # it's a cluster
             r = random.random()
-            if r < prob:
+            if r > prob:
+                # Single cell or cluster dies
                 continue
             else:
                 newLoc = random.randrange(1, 4)
@@ -636,6 +710,12 @@ class Model:
         self.breast.update_all()
         prev_vasc = self.vascular
         self.vascular.update_all(prev_primary_grid)
+        
+        # Extravasion:
+        self.bones.extravasate_clusters(prev_vasc.bones)
+        self.lungs.extravasate_clusters(prev_vasc.lungs)
+        self.liver.extravasate_clusters(prev_vasc.liver)
+
         # passing in the previous cells that will migrate to bones, lungs, liver
         self.bones.update_all(prev_vasc.bones)
         self.lungs.update_all(prev_vasc.lungs)
@@ -665,7 +745,7 @@ def main():
         model.update()
 
         if count % 10 == 0:
-            print(f"Iteration {count}, Time: {model.breast.time:.3f}")
+            print(f"Iteration {count}")
             fig.savefig(F"simulation/simulation-{count}.png")
         
         count += 1
@@ -679,6 +759,7 @@ def main():
     fig.canvas.mpl_connect('close_event', on_close)
 
     # ani.save("simulation.gif", writer)
+    plt.tight_layout()
 
     plt.show()
 

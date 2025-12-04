@@ -1,0 +1,13 @@
+[project]
+name = "modeling-metastatic-spread"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.7",
+    "numba>=0.62.1",
+    "pyqt6>=6.10.0",
+    "scipy>=1.16.3",
+    "sympy>=1.14.0",
+]
