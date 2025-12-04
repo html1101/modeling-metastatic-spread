@@ -2,41 +2,31 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import List
 import random
-import matplotlib
-matplotlib.use("Agg")  # Use a non-interactive backend
-
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-
 import numpy as np
 from matplotlib import colors
 from scipy.ndimage import convolve
 import time
 
-
-
-HEIGHT = 201  # board length
 WIDTH = 201  # board width
+HEIGHT = 201  # board height
 
 dt = 1 * (10 ** -3)
 dx = 5 * (10 ** -3)
 dy = 5 * (10 ** -3)
 # Mesenchymal-like cancer cell diffusion coeff
 #D_M = 1 * (10 ** -4)
-# Epithelial-like cancer cell diffusion coeff
-#D_E = 5 * (10 ** -5)
-
 D_M = 0.005
 # Epithelial-like cancer cell diffusion coeff
+#D_E = 5 * (10 ** -5)
 D_E = 0.0025
 # Mesenchymal haptotatic sensitivity coeff
 phi_M = 5 * (10 ** -4)
 # Epithelial haptotatic sensitivity coeff
 phi_E = 5 * (10 ** -4)
-
 # MMP-2 diffusion coefficient
 D_m = 1 * (10 ** -3)
-#D_m = 0.05
 # MMP-2 production rate
 theta = 0.195
 # MMP-2 decay rate
@@ -48,16 +38,17 @@ gamma_2 = 1
 # Time CTC's spend in vasculature
 T_v = 0.18
 # epithelial doubling time
+#T_E = 3
 T_E = 0.15
 # mesenchymal doubling time
+#T_M = 2
 T_M = 0.1
-
 # single CTC survival probability
 #P_s = 5 * (10 ** -4)
 P_s = 0
 # cluster survival probability
 #P_C = 2.5 * (10 ** -4)
-P_c = 0
+P_C = 0
 # extravasion prob to bones
 E_1 = 0.5461
 # extravasion prob to lungs
@@ -65,13 +56,11 @@ E_2 = 0.2553
 # extravasion prob to liver
 E_3 = 0.1986
 # Number of iterations to run
-ITERATIONS = 1
+ITERATIONS = 10
 # Max steps in vasaclature
-#vasc_time = 6
 vasc_time = 0.18
 # Probability cluster disaggregates
 P_d = .3  # idk tbh the paper doesn't say...
-
 
 # Global timing dictionary
 timing_stats = defaultdict(list)
@@ -192,16 +181,23 @@ class Grid:
     epi_time : float = 0 
     iterations : int = 0
 
-    def preview(self, ax):
-        images = [self.mes, self.epi, self.MMP2, self.ECM]
-        titles = ['MES', 'EPI', 'MMP2', 'ECM', 'bv']
-        cmaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Yellows']
+    def preview(self, fig, ax, celltype = "breast"):
+        # fig.suptitle("Cancer Cell Model ({}) - {} iterations".format(celltype, self.iterations))
+        # ax[0].clear()
+        # ax[0].set_title("Mesenchymal-like cancer cells")
+        # ax[0].imshow(self.mes, cmap=cmap_mes)
+        # ax[0].imshow(self.bv, cmap=cmap_bv)
 
-        for ax, img, title, cmap in zip(ax, images, titles, cmaps):
-            ax.clear()
-            ax.imshow(img, cmap=cmap, vmin=0, vmax=1)  # fixed scaling
-            ax.set_title(title)
-            ax.set_axis_off()
+        # ax[1].clear()
+        # ax[1].set_title("Epithelial-like cancer cells")
+        # ax[1].imshow(self.epi, cmap=cmap_epi)
+        # ax[1].imshow(self.bv, cmap=cmap_bv)
+        # Save this iteration's arrays
+
+        if self.iterations % 10 == 0:
+            np.savez_compressed(F'arrays/iter-{celltype}-{self.iterations}.npz',
+                                epi=self.epi, bv=self.bv,
+                                mes=self.mes, MMP2=self.MMP2, ECM=self.ECM)
 
 
     def __init__(self, gridtype = "primary"):
@@ -326,17 +322,19 @@ class Grid:
                     ECM_conc_up = self.ECM[(i,j+1)]
                     z = random.random()
                     coeff = dt / (dx ** 2)
-                    dw_dx = ECM_conc_left - ECM_conc_right
-                    dw_dy = ECM_conc_up - ECM_conc_down
+                    dw_dx = (ECM_conc_right - ECM_conc_left) / 2
+                    dw_dy = (ECM_conc_up - ECM_conc_down) / 2
 
-                    prob_move_left = coeff * (D_M -
-                                    (phi_M/4) * dw_dx)
-                    prob_move_right = coeff * (D_M +
-                                    (phi_M/4) * dw_dx)
-                    prob_move_down = coeff * (D_M +
-                                    (phi_M/4) * dw_dy)
-                    prob_move_up = coeff * (D_M - (phi_M/4)
-                                    * dw_dy)
+                    prob_left = coeff * (D_M - phi_M * dw_dx)
+                    prob_right = coeff * (D_M + phi_M * dw_dx)
+                    prob_down = coeff * (D_M - phi_M * dw_dy)
+                    prob_up = coeff * (D_M + phi_M * dw_dy)
+
+                    probs = np.maximum(np.array([prob_left, prob_right, prob_down, prob_up]), 0.0)
+                    total = np.sum(probs)
+
+                    [prob_move_left, prob_move_right, prob_move_down, prob_move_up] = probs / max(total, 1.0)
+
                     if z < prob_move_left:  # cell moves left
                         if i > 0 and new_mes[i-1][j] <= 3:
                             new_mes[(i, j)] = new_mes[(i, j)] - 1
@@ -373,8 +371,7 @@ class Grid:
     @time_function("Grid.update_epithelial_movement")
     def update_epithelial_movement(self) -> None:
         """
-        simulate movement
-        simulate mitosis
+        Simulate epithelial movement
         """
         new_epi = (self.epi).copy()
         rows, cols = self.epi.shape
@@ -386,18 +383,22 @@ class Grid:
                     ECM_conc_right = self.ECM[(i+1,j)]
                     ECM_conc_down = self.ECM[(i,j-1)]
                     ECM_conc_up = self.ECM[(i,j+1)]
-                    dw_dx = ECM_conc_right - ECM_conc_left
-                    dw_dy = ECM_conc_up - ECM_conc_down
+                    dw_dx = (ECM_conc_right - ECM_conc_left) / 2
+                    dw_dy = (ECM_conc_up - ECM_conc_down) / 2
+                    coeff = dt / (dx ** 2)
+
+                    prob_left = coeff * (D_E - phi_E * dw_dx)
+                    prob_right = coeff * (D_E + phi_E * dw_dx)
+                    prob_down = coeff * (D_E - phi_E * dw_dy)
+                    prob_up = coeff * (D_E + phi_E * dw_dy)
+
+                    probs = np.maximum(np.array([prob_left, prob_right, prob_down, prob_up]), 0.0)
+                    total = np.sum(probs)
+                    if total > 1:
+                        probs /= total
+                    [prob_move_left, prob_move_right, prob_move_down, prob_move_up] = probs
 
                     z = random.random()
-                    prob_move_left = (dt / (dx ** 2)) * (D_E -
-                                    (phi_E/4) * dw_dx)
-                    prob_move_right = (dt / (dx ** 2)) * (D_E +
-                                    (phi_E/4) * dw_dx)
-                    prob_move_down = (dt / (dx ** 2)) * (D_E +
-                                    (phi_E/4) * dw_dy)
-                    prob_move_up = (dt / (dx ** 2)) * (D_E - (phi_E/4)
-                                    * dw_dy)
                     if z < prob_move_left:
                         if i > 0 and new_epi[i-1][j] <= 3:
                             new_epi[(i, j)] = new_epi[(i, j)] - 1
@@ -430,6 +431,83 @@ class Grid:
             self.epi = np.minimum(4, self.epi * 2)
             self.epi_time = 0
     
+    @time_function("Grid.extravasate_clusters")
+    def extravasate_clusters(self, incoming_clusters, prob):
+        """
+        Upon extravasion, tumor cells exit vasculature into
+        secondary tissue via vessel node, then disperse locally
+
+        Ex. for each cluster going to grid:
+        - cluster = (mes, epi)
+        - Select random vessel coordinate (i, j)
+        - Place cells into (i, j) or neighboring sites until all cells assigned
+
+        Rules:
+        - Max occupancy = 4
+        - If cell can fit at (i, j), place into neighbor
+        - If all neighbors full, drop excess cells
+        """
+
+        if np.random.random() > prob:
+            # Can't extravasate, likelihood wasn't good enough
+            return
+        
+
+        if not incoming_clusters:
+            return
+        print("adding to cluster")
+        # Blood vessel locations
+        vessel_coords = np.argwhere(self.bv > 0)
+        if len(vessel_coords) == 0:
+            # No bvs to extravasate to
+            return
+        
+        for mes_count, epi_count in incoming_clusters:
+            # Choose a random one of the vessels
+            idx = random.randint(0, len(vessel_coords) - 1)
+            i, j = vessel_coords[idx]
+
+            # Take all coords around an incoming cluster
+            queue = [
+                (x, y) for (x, y) in
+                [(i, j), (i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]
+                if 0 <= x < WIDTH and 0 <= y < HEIGHT
+            ]
+
+            remaining_m = mes_count
+            remaining_e = epi_count
+
+            for (x, y) in queue:
+                # Move mes cells into this new space around i, j if
+                # there's room (if space > 0)
+                space = 4 - (self.mes[x, y] + self.epi[x, y])
+                if space <= 0:
+                    continue
+
+                
+                add = min(space, remaining_m)
+                self.mes[x, y] += add
+                print("mes", self.mes[x, y])
+                remaining_m -= add
+                if remaining_m == 0:
+                    break
+            
+            for (x, y) in queue:
+                # Move epi cells into this new space around i, j if
+                # there's room (if space > 0)
+                space = 4 - (self.mes[x, y] + self.epi[x, y])
+                if space <= 0:
+                    continue
+                
+                add = min(space, remaining_m)
+                self.epi[x, y] += add
+                print("epi", self.epi[x, y])
+                remaining_m -= add
+                if remaining_e == 0:
+                    break
+            
+
+
     @time_function("Grid.find_intravasating_clusters")
     def find_intravasating_clusters(self):
         # List: (mes count, epi count)
@@ -523,16 +601,14 @@ class Grid:
             increment time
             assign leaving clusters to new locations, and store in class attribute
             """
-
-            ####NEED TO DO ADD CELLS COMING FROM VEINS TO THE SECONDARY GRIDS
             self.update_MMP2()
             self.update_ECM()
             self.update_mesechymal_movement()
             self.update_epithelial_movement()
 
-            #new_clusters = self.find_intravasating_clusters()
+            new_clusters = self.find_intravasating_clusters()
 
-            #self.clusters.extend(new_clusters)
+            self.clusters.extend(new_clusters)
             self.update_mesechymal_mitosis()
             self.update_epithelial_mitosis()
         
@@ -544,7 +620,6 @@ class Grid:
 Set up vascular class 
 - List of cell clusters in vascular (#mesenchyml, #epithelia, time)
 """
-#Funny Joelle 😂😂😂
 @dataclass
 class Vascular:
     clusters: List[tuple[int, int, int]] = field(default_factory=list) # (# mes, # epi, time)
@@ -601,20 +676,22 @@ class Vascular:
             if cluster[0] == 0 or cluster[1] == 0:
                 prob = P_s # it's a single
             else:
-                prob = P_c # it's a cluster
+                prob = P_C # it's a cluster
             r = random.random()
             if r < prob:
                 continue
             else:
-                newLoc = random.random()
-                if newLoc <= E_1:
+                newLoc = random.randrange(1, 4)
+                if newLoc == 1:
                     bones.append((cluster[0], cluster[1]))
-                elif newLoc <= E_1 + E_2:
+                elif newLoc == 2:
                     lungs.append((cluster[0], cluster[1]))
-                else:
+                elif newLoc == 3:
                     liver.append((cluster[0], cluster[1]))
 
         self.bones = bones
+        if len(self.bones) > 0: 
+            print(len(self.bones))
         self.lungs = lungs
         self.liver = liver
 
@@ -655,77 +732,62 @@ class Model:
         self.breast.update_all()
         prev_vasc = self.vascular
         self.vascular.update_all(prev_primary_grid)
+        
+        # Extravasion:
+        self.bones.extravasate_clusters(prev_vasc.bones, E_1)
+        self.lungs.extravasate_clusters(prev_vasc.lungs, E_2)
+        self.liver.extravasate_clusters(prev_vasc.liver, E_3)
+
         # passing in the previous cells that will migrate to bones, lungs, liver
         self.bones.update_all(prev_vasc.bones)
         self.lungs.update_all(prev_vasc.lungs)
         self.liver.update_all(prev_vasc.liver)
 
-    def preview(self, ax):
+    def preview(self, fig, ax):
         """
         Create a visual of the grid
         """
-        self.breast.preview(ax)
-        self.lungs.preview(ax)
-        self.bones.preview(ax)
-        self.liver.preview(ax)
+        self.breast.preview(fig, ax, "breast")
+        self.bones.preview(fig, ax, "bones")
+        self.lungs.preview(fig, ax, "lungs")
+        self.liver.preview(fig, ax, "liver")
 
     
 def main():
-    fig, axs = plt.subplots(1, 5, figsize=(16, 4))
-    axs = np.array(axs)  # ensures indexing works even if ncols=1
+    # fig = plt.figure()
+    fig, ax = plt.subplots(1, 2)
+    ax[0].set_facecolor("black")
+    ax[1].set_facecolor("black")
     # create a model
     model = Model()
     # initialize model (populating with blood vessels and cells)
     model.initialize()
     # start with primary grid
-    count = int(ITERATIONS / dt)
-    # for t in range(count): change time later!!! # I think this shoudl be iterations / dt? # iterations
-    def run_simulation(model, steps):
-        frames = {
-            "breast":  {"mes": [], "epi": [], "mmp": [], "ecm": [], "bv": []},
-            "lungs":   {"mes": [], "epi": [], "mmp": [], "ecm": [], "bv": []},
-            "bones":   {"mes": [], "epi": [], "mmp": [], "ecm": [], "bv": []},
-            "liver":   {"mes": [], "epi": [], "mmp": [], "ecm": [], "bv": []}
-        }
+    count = 0
+    def animate(_):
+        #update the model 
+        nonlocal count
+        model.update()
 
-        for i in range(steps):
-            model.update()
-            if i % 50 == 0:
-                for organ_name, organ in [
-                    ("breast", model.breast),
-                    ("lungs",  model.lungs),
-                    ("bones",  model.bones),
-                    ("liver",  model.bones)
-                ]:
-                    frames[organ_name]["mes"].append(organ.mes.copy())
-                    frames[organ_name]["epi"].append(organ.epi.copy())
-                    frames[organ_name]["mmp"].append(organ.MMP2.copy())
-                    frames[organ_name]["ecm"].append(organ.ECM.copy())
-                    frames[organ_name]["bv"].append(organ.bv.copy())
+        if count % 10 == 0:
+            print(f"Iteration {count}")
+            # fig.savefig(F"simulation/simulation-{count}.png")
+        
+        count += 1
+        model.preview(fig, ax)
 
-        return frames
+    ani = animation.FuncAnimation(fig, animate, interval=200, frames=int(ITERATIONS/dt))
+
+    # Before closing out show timing stuff
+    def on_close(event):
+        print_timing_report()
     
-    def gif_from_frames(frames, filename, cmap="viridis"):
+    fig.canvas.mpl_connect('close_event', on_close)
 
-        fig, axs = plt.subplots(1, 5, figsize=(16, 5))
+    # ani.save("simulation.gif", writer)
+    plt.tight_layout()
 
-        def animate(i):
-            axs[0].clear(); axs[0].imshow(frames["mes"][i]); axs[0].set_title("MES"); axs[0].set_axis_off()
-            axs[1].clear(); axs[1].imshow(frames["epi"][i]); axs[1].set_title("EPI"); axs[1].set_axis_off()
-            axs[2].clear(); axs[2].imshow(frames["mmp"][i]); axs[2].set_title("MMP2"); axs[2].set_axis_off()
-            axs[3].clear(); axs[3].imshow(frames["ecm"][i]); axs[3].set_title("ECM"); axs[3].set_axis_off()
-            axs[4].clear(); axs[4].imshow(frames["bv"][i]); axs[4].set_title("BV"); axs[4].set_axis_off()
-
-        ani = animation.FuncAnimation(fig, animate, frames=len(frames["mes"]), interval=1)
-        ani.save(filename, writer="pillow")
-        plt.close(fig)
-
-    frames = run_simulation(model, steps=2000)
-
-    gif_from_frames(frames["breast"], "breast.gif")
-    gif_from_frames(frames["lungs"],  "lungs.gif")
-    gif_from_frames(frames["bones"],  "bones.gif")
-    gif_from_frames(frames["liver"],  "liver.gif")
+    plt.show()
 
 if __name__ == "__main__":
     main()
