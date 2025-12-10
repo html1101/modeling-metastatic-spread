@@ -455,7 +455,6 @@ class Grid:
 
         if not incoming_clusters:
             return
-        print("adding to cluster")
         # Blood vessel locations
         vessel_coords = np.argwhere(self.bv > 0)
         if len(vessel_coords) == 0:
@@ -487,7 +486,6 @@ class Grid:
                 
                 add = min(space, remaining_m)
                 self.mes[x, y] += add
-                print("mes", self.mes[x, y])
                 remaining_m -= add
                 if remaining_m == 0:
                     break
@@ -499,10 +497,9 @@ class Grid:
                 if space <= 0:
                     continue
                 
-                add = min(space, remaining_m)
+                add = min(space, remaining_e)
                 self.epi[x, y] += add
-                print("epi", self.epi[x, y])
-                remaining_m -= add
+                remaining_e -= add
                 if remaining_e == 0:
                     break
             
@@ -690,8 +687,6 @@ class Vascular:
                     liver.append((cluster[0], cluster[1]))
 
         self.bones = bones
-        if len(self.bones) > 0: 
-            print(len(self.bones))
         self.lungs = lungs
         self.liver = liver
 
@@ -755,39 +750,62 @@ class Model:
     
 def main():
     # fig = plt.figure()
-    fig, ax = plt.subplots(1, 2)
-    ax[0].set_facecolor("black")
-    ax[1].set_facecolor("black")
+    fig, axs = plt.subplots(1, 4, figsize=(16, 4))
+    axs = np.array(axs)  # ensures indexing works even if ncols=1
     # create a model
     model = Model()
     # initialize model (populating with blood vessels and cells)
     model.initialize()
     # start with primary grid
-    count = 0
-    def animate(_):
-        #update the model 
-        nonlocal count
-        model.update()
+    count = int(ITERATIONS / dt)
+    # for t in range(count): change time later!!! # I think this shoudl be iterations / dt? # iterations
+    def run_simulation(model, steps):
+        frames = {
+            "breast":  {"mes": [], "epi": [], "mmp": [], "ecm": [], "bv": []},
+            "lungs":   {"mes": [], "epi": [], "mmp": [], "ecm": [], "bv": []},
+            "bones":   {"mes": [], "epi": [], "mmp": [], "ecm": [], "bv": []},
+            "liver":   {"mes": [], "epi": [], "mmp": [], "ecm": [], "bv": []}
+        }
 
-        if count % 10 == 0:
-            print(f"Iteration {count}")
-            # fig.savefig(F"simulation/simulation-{count}.png")
-        
-        count += 1
-        model.preview(fig, ax)
+        for i in range(steps):
+            model.update()
+            if i % 10 == 0:
+                print(i)
+                for organ_name, organ in [
+                    ("breast", model.breast),
+                    ("lungs",  model.lungs),
+                    ("bones",  model.bones),
+                    ("liver",  model.bones)
+                ]:
+                    frames[organ_name]["mes"].append(organ.mes.copy())
+                    frames[organ_name]["epi"].append(organ.epi.copy())
+                    frames[organ_name]["mmp"].append(organ.MMP2.copy())
+                    frames[organ_name]["ecm"].append(organ.ECM.copy())
+                    frames[organ_name]["bv"].append(organ.bv.copy())
 
-    ani = animation.FuncAnimation(fig, animate, interval=200, frames=int(ITERATIONS/dt))
-
-    # Before closing out show timing stuff
-    def on_close(event):
-        print_timing_report()
+        return frames
     
-    fig.canvas.mpl_connect('close_event', on_close)
+    def gif_from_frames(frames, filename, cmap="viridis"):
 
-    # ani.save("simulation.gif", writer)
-    plt.tight_layout()
+        fig, axs = plt.subplots(1, 5, figsize=(16, 5))
 
-    plt.show()
+        def animate(i):
+            axs[0].clear(); axs[0].imshow(frames["mes"][i]); axs[0].set_title("MES"); axs[0].set_axis_off()
+            axs[1].clear(); axs[1].imshow(frames["epi"][i]); axs[1].set_title("EPI"); axs[1].set_axis_off()
+            axs[2].clear(); axs[2].imshow(frames["mmp"][i]); axs[2].set_title("MMP2"); axs[2].set_axis_off()
+            axs[3].clear(); axs[3].imshow(frames["ecm"][i]); axs[3].set_title("ECM"); axs[3].set_axis_off()
+            axs[4].clear(); axs[4].imshow(frames["bv"][i]); axs[4].set_title("BV"); axs[4].set_axis_off()
+
+        ani = animation.FuncAnimation(fig, animate, frames=len(frames["mes"]), interval=1)
+        ani.save(filename, writer="pillow")
+        plt.close(fig)
+
+    frames = run_simulation(model, steps=500)
+
+    gif_from_frames(frames["breast"], "breast.gif")
+    gif_from_frames(frames["lungs"],  "lungs.gif")
+    gif_from_frames(frames["bones"],  "bones.gif")
+    gif_from_frames(frames["liver"],  "liver.gif")
 
 if __name__ == "__main__":
     main()
