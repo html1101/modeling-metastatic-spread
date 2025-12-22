@@ -44,7 +44,7 @@ def make_2x2_plot(iteration, cell_type, base_dir=Path("./arrays")):
                 continue
             ax.imshow(grid, cmap="inferno", vmin=0, vmax=4)
             if "bv" in data:
-                ax.imshow(data["bv"], cmap=cmap_bv)
+                ax.imshow(data["bv"], cmap=cmap_bv, vmin=0, vmax=1)
             ax.axis("off")
             ax.set_title(f"{tissue} - {cell_type}")
         except Exception:
@@ -56,4 +56,4 @@ def make_2x2_plot(iteration, cell_type, base_dir=Path("./arrays")):
     plt.show()
 
 
-make_2x2_plot(1000, "Epithelial Cells")
+make_2x2_plot(100, "Mesenchymal Cells")

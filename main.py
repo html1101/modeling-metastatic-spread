@@ -12,7 +12,7 @@ import time
 WIDTH = 201  # board width
 HEIGHT = 201  # board height
 
-dt = 1 * (10 ** -3)
+dt = 5 * (10 ** -3)
 dx = 5 * (10 ** -3)
 dy = 5 * (10 ** -3)
 # Mesenchymal-like cancer cell diffusion coeff
@@ -441,7 +441,6 @@ class Grid:
         - If cell can fit at (i, j), place into neighbor
         - If all neighbors full, drop excess cells
         """
-
         if np.random.random() > prob:
             # Can't extravasate, likelihood wasn't good enough
             return
@@ -632,19 +631,19 @@ class Vascular:
             mes = cluster[0]
             epi = cluster[1]
             time = cluster[2]
-            if time == vasc_time:
+            if time >= vasc_time:
                 leavingVascular.append(cluster)
                 continue
             time += 1 #maybe this should be dt? -mia 
             # checking to see if they disaggregate
             if time >= vasc_time/2 and mes+epi >1:
                 disaggregate_mes = 0
-                for _ in range(mes):
+                for _ in range(int(mes)):
                     r = random.random()
                     if r < P_d:
                         disaggregate_mes += 1
                 disaggregate_epi = 0
-                for _ in range(epi):
+                for _ in range(int(epi)):
                     r = random.random()
                     if r < P_d:
                         disaggregate_epi += 1
@@ -659,9 +658,9 @@ class Vascular:
             else:
                 updatedClusters.append((mes, epi, time))
         self.clusters = updatedClusters
-        bones = []
-        lungs = []
-        liver = []
+        bones = self.bones
+        lungs = self.lungs
+        liver = self.liver
         for cluster in leavingVascular:
             if cluster[0] == 0 or cluster[1] == 0:
                 prob = P_s # it's a single
